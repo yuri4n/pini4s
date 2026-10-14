@@ -1,12 +1,22 @@
 # pini4s
 
-Small state stores and model bindings built on Kyo `SignalRef`. The library
-depends on `kyo-core` only and can be used with any kyo-ui renderer.
+Pinia-inspired shared state for Scala and Kyo. The current API is a small,
+explicit store of named `SignalRef` values, with an optional Nuxt-style
+`useState("key")(initial)` helper. The library depends on `kyo-core` only.
 
-The optional `pini4s-ui` module adds components built from plain Kyo UI. It
-depends on `kyo-ui`, with no dependency on tui4s or any renderer.
+pini4s handles shared application state. Component APIs belong in
+[kyo-ui-state](https://github.com/yuri4n/kyo-ui-state): its core provides typed
+emits and model bindings, and its optional UI module provides components.
+Its Scala package is `kyo.ui.state`; its core artifact is
+`io.github.yuri4n::kyo-ui-state`.
+Components own their local state by default and can opt into a shared store.
+There is no UI module or renderer dependency in pini4s.
 
-## Named state
+Stores are optional. A component with local state does not need pini4s. For
+a few shared values, keyed `useState` calls are enough. A named store is
+useful when related state and actions should have one application API.
+
+## Shared state
 
 Create one store when constructing your app, then pass it as a contextual
 value to the parts of the app that share state:
@@ -15,15 +25,18 @@ value to the parts of the app that share state:
 import kyo.*
 import pini4s.*
 
-def counter(using StateStore, Frame): SignalRef[Int] < Sync =
+def counter(using StateStore): SignalRef[Int] < Sync =
   useState("counter")(0)
 
-def appState(using Frame): SignalRef[Int] < Sync =
+def appState: SignalRef[Int] < Sync =
   StateStore.init.map { store =>
     given StateStore = store
     counter
   }
 ```
+
+The helper delegates to `store.useState("counter")(0)`, so callers can also
+use the store directly.
 
 `useState("counter")(0)` is a lazy lookup: the first use initializes the
 reference and every later use in that store returns the same reference.
@@ -34,115 +47,81 @@ the key available for retry.
 Each key has one exact type, including generic arguments. Reusing a key as
 both `List[Int]` and `List[String]` fails with a descriptive error.
 
+## Named stores
+
+A named store is an ordinary Scala class that groups state and actions:
+
+```scala
+import kyo.*
+import pini4s.*
+
+final class DashboardStore(val currentTab: SignalRef[Int]):
+  def selectTab(index: Int): Unit < Sync =
+    currentTab.set(index)
+
+def useDashboardStore(using StateStore): DashboardStore < Sync =
+  useState("dashboard.currentTab")(0).map(new DashboardStore(_))
+```
+
+Call `useDashboardStore` with the application's `given StateStore`, as in
+the shared-state example above. Callers read `store.currentTab` and request
+changes with `store.selectTab(index)`. The action returns a Kyo effect; the
+state changes when that effect executes.
+
+Repeated calls create small wrappers around the same shared reference. A
+different `StateStore` gives independent dashboard state. This pattern uses
+the existing API and needs no store-definition macro or base class.
+
+## Kyo Env
+
+Applications can provide the store through `Env` instead of contextual Scala
+parameters. The same store implementation works with either approach:
+
+```scala
+def useDashboardStoreFromEnv: DashboardStore < (Sync & Env[StateStore]) =
+  Env.use[StateStore](store => useDashboardStore(using store))
+
+def dashboardState: DashboardStore < Sync =
+  StateStore.init.map(store => Env.run(store)(useDashboardStoreFromEnv))
+```
+
+Resolve the store during component setup, then capture the returned store or
+signals in event handlers. Those handlers can run after the `Env.run` above has
+finished. Wrapping UI construction in `Env.run` does not itself provide values
+to an unexecuted callback; an action that still requires `Env` needs its own
+handler when invoked. For child fibers, handle the complete spawn-and-join
+computation, or provide dependencies inside the fiber before returning its
+handle. Handling only the spawn can leave `Env` required by the handle's `get`.
+
+Application code can let Kyo derive `Frame` automatically, as these examples
+do. Library helpers propagate it to preserve caller source locations. A
+`Frame` describes a code location; application stores and services are the
+dependencies that are useful to provide through `Env`.
+
+## Store lifetime
+
 The store is explicit. Components capture it through ordinary Scala
 contextual parameters, including when their bodies run later. State survives
 component unmounts while the store is reachable. Create a fresh store for
-each app run or test; there is no process-wide registry. Use `Signal.initRef`
-directly for state owned only by one component.
-
-## Model bindings
-
-`Model(ref)` supplies a reactive value and a setter, like a Vue `v-model`:
-
-```scala
-def binding(using Frame): Model[Int] < Sync =
-  Signal.initRef(0).map(Model(_))
-```
-
-A custom setter can validate, transform or reject requested changes:
-
-```scala
-def bounded(ref: SignalRef[Int])(using Frame): Model[Int] =
-  Model(ref, next => ref.set(next.max(0).min(100)))
-```
-
-Consumers render `model.value` and request changes with `model.set(next)`.
-The source signal remains authoritative, so a rejected change does not
-silently update a second local copy. Setters may perform asynchronous Kyo
-effects. Building a `model.set(next)` effect does not call the setter; the
-setter runs when the effect executes.
+each app run or test; there is no process-wide registry. For state owned only
+by one component, use the consuming UI core's local-state API or Kyo's
+`Signal.initRef` directly.
 
 The store owns references only. Effects and resources retain their usual
-Kyo `Scope` lifetimes.
-
-## Component events
-
-`useEmits` connects typed component events to a parent callback, like Vue's
-`defineEmits` and instance `$emit` (singular). Use an enum for event names and
-payloads:
-
-```scala
-enum TabsEvent:
-  case Change(index: Int)
-  case Close
-
-def selectTab(
-    index: Int,
-    onEvent: TabsEvent => Unit < Async,
-)(using Frame): Unit < Async =
-  val emit = useEmits[TabsEvent](onEvent)
-  emit(TabsEvent.Change(index))
-```
-
-Building `emit(event)` does not call the callback. Executing the returned
-effect calls it once, waits for asynchronous work, and propagates failures.
-The callback belongs to that component; there is no global bus or
-subscription lifecycle.
-
-Use events to notify a parent about an interaction. Use `Model` when the
-parent supplies the value and decides whether to accept a requested change.
-A component can own its local state and emit changes, or accept a model for
-controlled state.
-
-## Kyo UI components
-
-`pini4s.ui.Tabs` owns its selection by default. Its panel is a scoped slot,
-its events are typed, and a parent can supply a model:
-
-```scala
-import kyo.UI.*
-import pini4s.ui.{Tabs, TabsEvent}
-
-def tabs(using Frame): UI < Sync =
-  new Tabs(
-    Seq("CPU", "Memory", "Network"),
-    heading = h1("Dashboard"),
-    panel = index => div(s"Selected: $index"),
-  ).ui
-
-def sharedTabs(using StateStore, Frame): UI < Sync =
-  useState("dashboard.currentTab")(0).map { selected =>
-    new Tabs(
-      Seq("CPU", "Memory", "Network"),
-      model = Some(Model(selected)),
-      panel = index => div(s"Selected: $index"),
-    ).ui
-  }
-```
-
-Each evaluation of `ui` creates independent local state and a unique focus
-group, including when the same allocation effect is run twice. Keep the
-returned UI during reactive updates. For a renderer with a component mount
-lifecycle, allocate `initial` at mount and retain its `SignalRef[Tabs.State]`
-while calling `view` with new props. Drop that reference on unmount. Shared
-model state belongs to its store and can survive the component.
-
-Arrow keys select relative to the focused button. Tab changes focus only;
-Enter and Space activate the focused button through the renderer's normal
-Kyo UI event handling. A controlled model may reject a request; the event is
-still emitted and the displayed value remains the parent's signal.
-
-The pure Kyo UI tests evaluate the tree and its handlers without a terminal.
-The tui4s example adds its own mount adapter and terminal integration tests.
-Browser rendering and a ZIO-facing adapter are not yet validated here. Kyo's
-existing ZIO bridge can be used by an adapter without changing this state API.
+Kyo `Scope` lifetimes. Component effects and lifecycle belong to the UI
+runtime. A `kyo.ui.state` model binding can use a stored `SignalRef` without
+making pini4s depend on that binding API.
 
 ## Development
 
 Use JDK 25, Scala 3.9.0, and sbt 1.13.0. Kyo is pinned to 1.0.0-RC7.
 
 ```sh
-sbt test ui/test
+sbt test
 ```
+
+Tests use Kyo's test runner, and compiler warnings fail the build. The
+store tests cover repeated and concurrent lookup, lazy initialization,
+retry after initialization failure, exact types, and independent stores.
 
 This working draft has no release or published artifact yet.
