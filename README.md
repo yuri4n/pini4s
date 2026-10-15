@@ -4,17 +4,15 @@ Pinia-inspired shared state for Scala and Kyo. The current API is a small,
 explicit store of named `SignalRef` values, with an optional Nuxt-style
 `useState("key")(initial)` helper. The library depends on `kyo-core` only.
 
-pini4s handles shared application state. Component APIs belong in
-[kyo-ui-state](https://github.com/yuri4n/kyo-ui-state): its core provides typed
-emits and model bindings, and its optional UI module provides components.
-Its Scala package is `kyo.ui.state`; its core artifact is
-`io.github.yuri4n::kyo-ui-state`.
-Components own their local state by default and can opt into a shared store.
-There is no UI module or renderer dependency in pini4s.
+pini4s adds keyed reference reuse within an explicit application registry.
+Kyo already provides signals, UI bindings, effects, and dependency injection.
+Components use those APIs directly and own their local state by default.
+pini4s has no UI module or renderer dependency.
 
-Stores are optional. A component with local state does not need pini4s. For
-a few shared values, keyed `useState` calls are enough. A named store is
-useful when related state and actions should have one application API.
+Stores are optional. A component with local state does not need pini4s. A
+named store can be an ordinary Scala class supplied through Kyo `Env` or
+`Layer`, also without pini4s. Use this registry when separate consumers need
+to find the same shared signal by key.
 
 ## Shared state
 
@@ -40,6 +38,8 @@ use the store directly.
 
 `useState("counter")(0)` is a lazy lookup: the first use initializes the
 reference and every later use in that store returns the same reference.
+In contrast, each evaluation of Kyo's `Signal.initRef(0)` allocates a new
+reference. Both APIs return the same native Kyo `SignalRef` type.
 Initialization runs inside the effect, once even when fibers race to create
 the key. Later initializers are not evaluated. A failed initializer leaves
 the key available for retry.
@@ -71,6 +71,41 @@ state changes when that effect executes.
 Repeated calls create small wrappers around the same shared reference. A
 different `StateStore` gives independent dashboard state. This pattern uses
 the existing API and needs no store-definition macro or base class.
+
+If the application already passes one `DashboardStore` to its consumers,
+it can construct that store directly with Kyo and skip the keyed registry:
+
+```scala
+def newDashboardStore: DashboardStore < Sync =
+  Signal.initRef(0).map(new DashboardStore(_))
+
+val dashboardLayer: Layer[DashboardStore, Sync] = Layer(newDashboardStore)
+```
+
+Consumers can then request `Env[DashboardStore]` through Kyo's existing
+dependency APIs. The class groups state and actions; pini4s is needed only
+for the optional keyed lookup behavior.
+
+## Native Kyo UI
+
+A stored reference works directly with Kyo UI's native bindings, such as
+`input.value(ref)` for a string or `checkbox.checked(ref)` for a boolean.
+Applications that use Kyo UI can write:
+
+```scala
+import kyo.UI.*
+
+def searchField(using StateStore): UI < Sync =
+  useState("search.query")("").map(query => input.value(query))
+
+def selectCpu(store: DashboardStore): UI =
+  val select: Int => Unit < Async = index => store.selectTab(index)
+  button("CPU").onClick(select(0))
+```
+
+Custom components can accept ordinary typed callbacks such as
+`Int => Unit < Async`, or a function from an application event enum. Native
+bindings and these callbacks need no pini4s-specific model or event API.
 
 ## Kyo Env
 
@@ -104,13 +139,12 @@ The store is explicit. Components capture it through ordinary Scala
 contextual parameters, including when their bodies run later. State survives
 component unmounts while the store is reachable. Create a fresh store for
 each app run or test; there is no process-wide registry. For state owned only
-by one component, use the consuming UI core's local-state API or Kyo's
-`Signal.initRef` directly.
+by one component, use Kyo's `Signal.initRef` directly.
 
 The store owns references only. Effects and resources retain their usual
 Kyo `Scope` lifetimes. Component effects and lifecycle belong to the UI
-runtime. A `kyo.ui.state` model binding can use a stored `SignalRef` without
-making pini4s depend on that binding API.
+runtime. Native Kyo UI bindings consume the stored `SignalRef` directly;
+pini4s itself needs only `kyo-core`.
 
 ## Development
 

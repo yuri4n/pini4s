@@ -9,21 +9,22 @@ explicit `StateStore` and an optional Nuxt-style keyed `useState` helper.
 Keep these architectural decisions in future changes:
 
 - Shared stores belong in pini4s. Its production dependency is `kyo-core`.
-- Component APIs belong in the separate
-  [kyo-ui-state repository](https://github.com/yuri4n/kyo-ui-state). Its core owns
-  `Model`, `Emits`, and `useEmits`; its optional UI module owns `Tabs`.
-  Its Scala package is `kyo.ui.state`, with artifact
-  `io.github.yuri4n::kyo-ui-state`; the namespace does not imply upstream
-  Kyo ownership.
-  Do not add these APIs or a UI module to pini4s.
+- Reuse native Kyo signals, UI bindings, typed Scala callbacks, `Env`, and
+  `Layer`. Do not add widget, model, emit, or UI framework APIs to pini4s.
+- The extra behavior here is an explicit keyed registry: one native
+  `SignalRef` per string key, with one exact value type enforced per key;
+  lazy successful initialization once even under concurrent lookup; retry
+  after initialization failure; and separate state for separate registries.
+  Keep this distinction from native Kyo clear.
 - A component owns its local state by default. Shared state is an explicit
   option, supplied by a parent or application store.
-- Stores are optional. Local component state needs no pini4s. Use keyed
-  `useState` for a few shared values; use an ordinary Scala class to group
-  related state and actions when a named store helps the application.
+- Stores are optional. Local component state needs no pini4s. An ordinary
+  named Scala store can group state and actions and use Kyo `Env` or `Layer`
+  without pini4s. Use keyed `useState` only when consumers need shared
+  registry lookup.
 - Follow Vue and Pinia conventions where they help a typed Scala API.
-  Component APIs inspired by Vue belong in kyo-ui-state; store APIs inspired
-  by Pinia belong here.
+  Reuse Kyo's native capabilities before adding a new abstraction. Keep
+  pini4s focused on shared registry behavior inspired by Pinia.
 - Use explicit stores with application or test lifetimes. Do not introduce a
   process-wide state registry or make the store own component resources.
 - Support composition with Kyo Env as well as Scala contextual parameters.
