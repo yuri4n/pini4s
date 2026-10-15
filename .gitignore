@@ -4,3 +4,8 @@ project/project/
 .bsp/
 .metals/
 .idea/
+
+# Nix / direnv
+.direnv/
+/result
+/result-*

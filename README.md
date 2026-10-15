@@ -72,6 +72,19 @@ Repeated calls create small wrappers around the same shared reference. A
 different `StateStore` gives independent dashboard state. This pattern uses
 the existing API and needs no store-definition macro or base class.
 
+The current registry shares signals only: this helper creates a new
+`DashboardStore` object on each call and does not run a whole group's setup
+once. For a group of related composables, including references, computed
+values, actions, subscriptions, and resources, construct one typed object
+under the application's Kyo `Scope` and provide that exact object through
+`Env`. Keep that scope open for the application run. Components then share
+the group without owning its cleanup; application shutdown closes its
+effects. Each app, test, or SSR request needs its own provider.
+
+A dedicated definition API for such shared groups is still being compared
+with native Kyo composition and state-effect approaches. The existing
+`StateStore` does not own or dispose those effects.
+
 If the application already passes one `DashboardStore` to its consumers,
 it can construct that store directly with Kyo and skip the keyed registry:
 
@@ -149,13 +162,56 @@ pini4s itself needs only `kyo-core`.
 ## Development
 
 Use JDK 25, Scala 3.9.0, and sbt 1.13.0. Kyo is pinned to 1.0.0-RC7.
+With Nix and flakes enabled, the development shell supplies the JDK and sbt:
 
 ```sh
-sbt test
+nix develop
+sbt check
 ```
+
+The pinned shell targets Linux on x86_64 or aarch64 and macOS on Apple
+Silicon. This nixpkgs revision does not support Intel macOS; use the manual
+JDK 25 and sbt setup below on that platform.
+
+With direnv and nix-direnv installed, `direnv allow` enables the same shell
+when entering this checkout. Without Nix, install JDK 25 and sbt, make sure
+`JAVA_HOME` points to that JDK, and run the same sbt commands. The first run
+downloads dependencies; later runs reuse Nix and sbt caches.
 
 Tests use Kyo's test runner, and compiler warnings fail the build. The
 store tests cover repeated and concurrent lookup, lazy initialization,
 retry after initialization failure, exact types, and independent stores.
+`sbt check` runs those tests and compiles the console demo. `sbt test` runs
+only the library tests.
+
+## Runnable distribution
+
+The root project remains a library. A separate, nonpublishing `demo` project
+uses sbt-native-packager to package a console example with its dependencies:
+
+```sh
+sbt demo/Universal/stage demo/Universal/packageBin
+demo/target/universal/stage/bin/pini4s-demo
+```
+
+Expected output:
+
+```text
+pini4s-demo: shared=7 independent=0
+```
+
+The example checks that two lookups of the same key share a reference and
+observe its update, while a fresh store keeps independent state. It uses
+the actual `StateStore` and needs no UI renderer or terminal.
+
+`stage` writes a runnable directory under `demo/target/universal/stage`.
+`packageBin` writes its ZIP distribution under `demo/target/universal`.
+The generated launcher works after extracting that ZIP with JDK 25 available
+through `JAVA_HOME` or `PATH`; the archive contains the application and its
+dependency jars, and uses the installed JDK. It does not require sbt to run.
+CI checks both the staged launcher and the extracted ZIP, including an
+extraction path that contains spaces, and keeps the ZIP as a build artifact.
+It also evaluates the Nix shell for all declared systems without building
+the tools or allowing lockfile updates.
 
 This working draft has no release or published artifact yet.

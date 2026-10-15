@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sbt:
+    name: Test, compile, and package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: sbt
+      - uses: sbt/setup-sbt@v1
+      - run: sbt check demo/Universal/stage demo/Universal/packageBin
+      - name: Smoke test the staged and extracted demo
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected='pini4s-demo: shared=7 independent=0'
+          staged_output="$(demo/target/universal/stage/bin/pini4s-demo)"
+          test "$staged_output" = "$expected"
+          package_dir="$(mktemp -d "$RUNNER_TEMP/pini4s package.XXXXXX")"
+          unzip -q demo/target/universal/*.zip -d "$package_dir"
+          launchers=("$package_dir"/*/bin/pini4s-demo)
+          test "${#launchers[@]}" -eq 1
+          packaged_output="$("${launchers[0]}")"
+          test "$packaged_output" = "$expected"
+      - name: Keep runnable distribution
+        uses: actions/upload-artifact@v7
+        with:
+          name: pini4s-demo
+          path: demo/target/universal/*.zip
+          if-no-files-found: error
+
+  nix:
+    name: Evaluate development shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@3c6342b75005b9cc7c7d4069c3e9179247c89012 # v31
+      - run: nix flake check --all-systems --no-build --no-update-lock-file
